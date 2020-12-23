@@ -11,3 +11,8 @@ _________________________________________________
 
 mne watershed_bem -s sub-01 --overwrite
 mne make_scalp_surface -s sub-01 --force --overwrite
+
+=================================================
+Important links:
+https://mne.tools/stable/auto_tutorials/source-modeling/plot_background_freesurfer.html
+MNE_Workshop/Tut3-Forward_model
