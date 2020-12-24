@@ -5,7 +5,7 @@ export SUBJECTS_DIR=~/data/pic-name-data-bids/MRI
 _________________________________________________
 
 my_subject = sub-01
-my_mri = path/to/T1.mgz
+my_mri = ~/data/pic-name-data-bids/MRI/fsaverage/mri/T1.mgz
 recon-all -i $my_mri -s $my_subject -all
 _________________________________________________
 
