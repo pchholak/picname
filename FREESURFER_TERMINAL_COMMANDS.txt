@@ -1,0 +1,30 @@
+conda activate mne
+export FREESURFER_HOME=~/freesurfer
+source $FREESURFER_HOME/SetUpFreeSurfer.sh
+export SUBJECTS_DIR=~/data/pic-name-data-bids/MRI
+_________________________________________________
+
+my_subject=sub-00
+my_mri=~/data/pic-name-data-bids/MRI/fsaverage/mri/T1.mgz
+recon-all -i $my_mri -s $my_subject -all
+_________________________________________________
+
+my_subject=sub-00
+mne watershed_bem -s $my_subject --overwrite
+mne make_scalp_surfaces -s $my_subject --force --overwrite
+_________________________________________________
+
+my_subject=sub-00
+
+mri_surf2surf --srcsubject fsaverage --trgsubject $my_subject --hemi lh \
+    --sval-annot $SUBJECTS_DIR/fsaverage/label/lh.PALS_B12_Brodmann.annot \
+    --tval $SUBJECTS_DIR/$my_subject/label/lh.PALS_B12_Brodmann.annot
+
+mri_surf2surf --srcsubject fsaverage --trgsubject $my_subject --hemi rh \
+    --sval-annot $SUBJECTS_DIR/fsaverage/label/rh.PALS_B12_Brodmann.annot \
+    --tval $SUBJECTS_DIR/$my_subject/label/rh.PALS_B12_Brodmann.annot
+
+=================================================
+Important links:
+https://mne.tools/stable/auto_tutorials/source-modeling/plot_background_freesurfer.html
+MNE_Workshop/Tut3-Forward_model

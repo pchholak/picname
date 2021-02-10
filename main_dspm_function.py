@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
+# In[ ]:
 
 
 get_ipython().run_line_magic('matplotlib', 'qt')
@@ -13,18 +13,21 @@ import os.path as op
 import warnings
 warnings.simplefilter("ignore", category=DeprecationWarning)
 
-from mne_bids import read_raw_bids, make_bids_basename
-
 mne.set_log_level('WARNING')
 
-from mne.minimum_norm import (make_inverse_operator, apply_inverse, write_inverse_operator,
-                             estimate_snr)
+from mne.minimum_norm import make_inverse_operator, apply_inverse, apply_inverse_epochs, write_inverse_operator, estimate_snr
 
 from mayavi import mlab
-from IPython.display import Image
+# from IPython.display import Image
 
 
-# In[2]:
+# In[ ]:
+
+
+FIRST_EV = [65.583, 67.787, 68.485, 51.884, 48.919, 55.836, 1, 93, 48.372, 55.292, 64.907, 68.374, 66.375, 66.901, 67.261]
+
+
+# In[ ]:
 
 
 def var_reject(epochs, plow, phigh, to_plot=True):
@@ -49,14 +52,14 @@ def var_reject(epochs, plow, phigh, to_plot=True):
         plt.legend()
         plt.show()
     bad_trials = np.union1d(badtrls, outlr_idx)
-    print('Removed trials: %s\n'%bad_trials)
+#     print('Removed trials: %s\n'%bad_trials)
     return bad_trials
 
 
-# In[3]:
+# In[ ]:
 
 
-def set_params(iSub, ctrlwin=[-0.5,0], actiwin=[0,1], plow=2, phigh=98):
+def set_params(iSub, ctrlwin=[-0.5, 0], actiwin=[0, 1], plow=2, phigh=98, dominant_brain="left"):
     """
     Set parameters, directories and filenames for the subject
     """
@@ -71,13 +74,13 @@ def set_params(iSub, ctrlwin=[-0.5,0], actiwin=[0,1], plow=2, phigh=98):
     par['data_path'] = op.join(par['data_dir'], 'MEG')
     subjects_dir = op.join(par['data_dir'], 'MRI')
     subject = 'sub-' + sSub
-    par['res_dir'] = op.join(op.expanduser("~/research/results/pic_name"), subject)
+    par['res_dir'] = op.join(op.expanduser("~/research/results/picname"), subject)
 
-    par['bids_basename'] = make_bids_basename(subject=sSub, session=session,
-                                      task=task, run=run)
-    par['bids_fname'] = par['bids_basename'] + '_meg.fif'
+    par['bids_fname'] = subject + '_ses-' + session + '_task-' + task + '_run-' + run + '_meg.fif'
     par['bids_path'] = op.join(par['data_path'], subject, 'ses-'+session, 'meg')
     par['raw_fname'] = op.join(par['bids_path'], par['bids_fname'])
+
+    par['evoked_fname'] = op.join(par['res_dir'], subject+'-ave.fif')
     par['trans_fname'] = op.join(par['bids_path'], subject+'-trans.fif')
     par['fwd_fname'] = op.join(par['bids_path'], subject + '-cort-meg-fwd.fif')
     par['mrifile'] = op.join(subjects_dir, subject, 'mri/T1.mgz')
@@ -85,54 +88,126 @@ def set_params(iSub, ctrlwin=[-0.5,0], actiwin=[0,1], plow=2, phigh=98):
                               'bem/watershed', subject+'_brain_surface')
     par['stc_fname'] = op.join(par['res_dir'], 'dspm_' + subject)
     par['info'] = mne.io.read_info(par['raw_fname'])
+    par['dominant_brain'] = dominant_brain
+
+    # Set time instant for cropping raw data in the beginning
+    par['raw_tmin'] = FIRST_EV[iSub-1] - 0.501
+
+    # Changing of EEG channels to EOG/ECG
+    if subject == 'sub-06':
+        par['change_eeg_channels'] = True
+    else:
+        par['change_eeg_channels'] = False
+
+    # Applying EOG/ECG SSP
+    if iSub in [1, 2, 3, 4, 6]:
+        par['apply_ssp_eog'] = True
+        par['apply_ssp_ecg'] = True
+    elif iSub in range(7, 16):
+        par['apply_ssp_eog'] = True
+        par['apply_ssp_ecg'] = False
+    elif iSub == 100:
+        par['apply_ssp_eog'] = False
+        par['apply_ssp_ecg'] = True
+    elif iSub == 5:
+        par['apply_ssp_eog'] = False
+        par['apply_ssp_ecg'] = False
 
     return par, subject, subjects_dir
 
 
-# In[4]:
+# In[ ]:
 
 
 def preprocess(par, subject, subjects_dir, more_plots=False):
     """
     Preprocess data, load epochs, and get evoked response
     """
-    raw = read_raw_bids(par['bids_fname'], par['data_path'],
-                        extra_params=dict(allow_maxshield=False, preload=True))
-#     raw.plot();
-#     raw.annotations.save(op.join(par['bids_path'], subject + '-annot.csv'))
+    raw = mne.io.read_raw_fif(par['raw_fname'], allow_maxshield=False, preload=True, verbose=True)
+    raw.crop(tmin=par['raw_tmin'], tmax=None)
 
-    events, event_id = mne.events_from_annotations(raw)
+    events = mne.find_events(raw, stim_channel='STI101', min_duration=0.002, shortest_event=2)
+    delay = int(round(0.056 * raw.info['sfreq']))
+    events[:, 0] = events[:, 0] + delay
     if more_plots:
-        mne.viz.plot_events(events, first_samp=0, event_id=event_id,
-                           equal_spacing=True, show=True)
+        mne.viz.plot_events(events, first_samp=0, event_id=None, equal_spacing=True, show=True)
 
-    picks = mne.pick_types(raw.info, meg=True, eog=True, ecg=True, stim=False, exclude='bads')
+    # Change channel types for sub-06
+    if par['change_eeg_channels']:
+        print("Renaming EEG channels and changing channel types for subject:", subject)
+        raw.set_channel_types({'EEG061': 'eog', 'EEG062': 'ecg'})
+        raw.rename_channels({'EEG061': 'EOG061', 'EEG062': 'ECG062'})
 
-    raw.filter(2, 40, picks=picks, filter_length='auto', n_jobs=1,
+    # Create EOG projectors and apply SSP
+    if par['apply_ssp_eog']:
+        print('Computing EOG projectors')
+        # Create EOG projectors and apply SSP
+        eog_epochs = mne.preprocessing.create_eog_epochs(raw)
+        eog_epochs.average().plot_joint(picks='mag')
+        plt.savefig(op.join(par['res_dir'], 'eog_evoked_' + subject + '.pdf'))
+        plt.close()
+        projs_eog, _ = mne.preprocessing.compute_proj_eog(raw, n_mag=3, n_grad=3, average=True)
+
+    # Create ECG projectors and apply SSP
+    if par['apply_ssp_ecg']:
+        print('Computing ECG projectors')
+        # Create ECG projectors and apply SSP
+        ecg_epochs = mne.preprocessing.create_ecg_epochs(raw)
+        ecg_epochs.average().plot_joint(picks='mag')
+        plt.savefig(op.join(par['res_dir'], 'ecg_evoked_' + subject + '.pdf'))
+        plt.close()
+        projs_ecg, _ = mne.preprocessing.compute_proj_ecg(raw, n_mag=3, n_grad=3, average=True)
+
+    picks = mne.pick_types(raw.info, meg=True, exclude='bads')
+
+    raw.filter(1, 20, picks=picks, filter_length='auto', n_jobs=1,
           method='fir', iir_params=None, phase='zero', fir_window='hamming',
           fir_design='firwin', skip_by_annotation=('edge', 'bad_acq_skip'),
           pad='reflect_limited', verbose=True)
     if more_plots:
-        raw.plot_psd(fmin=0, fmax=45, proj=False, verbose=True)
+        raw.plot_psd(fmin=0, fmax=25, proj=False, verbose=True)
 
-    epochs = mne.Epochs(raw, events, event_id, par['ctrlwin'][0], par['actiwin'][1],
+    epochs = mne.Epochs(raw, events, tmin=par['ctrlwin'][0], tmax=par['actiwin'][1],
                        baseline=(par['ctrlwin'][0],par['ctrlwin'][1]), picks=picks,
-                       preload=True, reject=None, flat=None, proj=False, decim=1,
-                       reject_tmin=None, reject_tmax=None, detrend=None,
-                       on_missing='error', reject_by_annotation=True,
-                       verbose=True)
-    epochs.pick_types(meg=True)
+                       preload=True, proj=False, verbose=True)
 
-    bad_trials = var_reject(epochs, par['plow'], par['phigh'], to_plot=False)
-    epochs.drop(bad_trials, reason='variance based rejection', verbose=True)
+    # Add desirable projectors
+    if par['apply_ssp_eog'] & par['apply_ssp_ecg']:
+        print('EOG+ECG:', subject)
+        epochs.del_proj()
+        epochs.add_proj(projs_eog[::3] + projs_ecg[::3]);
+        epochs.apply_proj();
+    elif par['apply_ssp_eog'] | par['apply_ssp_ecg']:
+        if par['apply_ssp_eog']:
+            print('EOG:', subject)
+            epochs.del_proj()
+            epochs.add_proj(projs_eog[::3]);
+            epochs.apply_proj();
+        else:
+            print('ECG:', subject)
+            epochs.del_proj()
+            epochs.add_proj(projs_ecg[::3]);
+            epochs.apply_proj();
+    else:
+        print('No SSP:', subject)
+        epochs.del_proj()
+
+    bad_trials = var_reject(epochs, par['plow'], par['phigh'], to_plot=True)
+    plt.savefig(op.join(par['res_dir'], 'trial_variances_' + subject + '.pdf'))
+    plt.close()
+    epochs.drop(bad_trials, reason='variance based rejection', verbose=True);
 
     evoked = epochs.average()
-    evoked.plot(spatial_colors=True, gfp=True, proj=False, time_unit='ms')
+    evoked.save(par['evoked_fname'])
+    evoked.plot(spatial_colors=True, gfp=True, time_unit='ms')
+    plt.savefig(op.join(par['res_dir'], 'evoked_' + subject + '.pdf'))
+    plt.close()
 
+    # plt.close('all')
     return epochs, evoked
 
 
-# In[5]:
+# In[ ]:
 
 
 def forward_solution(par, subject, subjects_dir, to_make=True):
@@ -156,11 +231,65 @@ def forward_solution(par, subject, subjects_dir, to_make=True):
     fwd = mne.convert_forward_solution(fwd, surf_ori=True)
 
     print("Leadfield size : %d sensors x %d dipoles" % fwd['sol']['data'].shape)
-
     return fwd
 
 
-# In[6]:
+# In[ ]:
+
+
+def get_roi_labels(subject, subjects_dir, name, dominant='left'):
+    if name == "LO":
+        labels = mne.read_labels_from_annot(subject, parc='aparc', subjects_dir=subjects_dir)
+        ROI = ['lateraloccipital-lh', 'lateraloccipital-rh']
+        labels_roi = []
+        for lbl in labels:
+            if lbl.name in ROI:
+                print(lbl.name)
+                labels_roi.append(lbl)
+        label = labels_roi[0]
+        for i in range(1, len(labels_roi)):
+            label = label + labels_roi[i]
+        return label
+    elif name == "Wernicke":
+        labels = mne.read_labels_from_annot(subject, parc='PALS_B12_Brodmann', subjects_dir=subjects_dir)
+        if dominant == 'left':
+            ROI = ['Brodmann.22-lh']
+        elif dominant == "right":
+            ROI = ['Brodmann.22-rh']
+        else:
+            raise ValueError("$dominant can either be 'left' or 'right'. Check input value.")
+        labels_roi = []
+        for lbl in labels:
+            if lbl.name in ROI:
+                print(lbl.name)
+                labels_roi.append(lbl)
+        label = labels_roi[0]
+        for i in range(1, len(labels_roi)):
+            label = label + labels_roi[i]
+        return label
+    elif name == "Broca":
+        labels = mne.read_labels_from_annot(subject, parc='PALS_B12_Brodmann', subjects_dir=subjects_dir)
+        if dominant == 'left':
+            ROI = ['Brodmann.44-lh', 'Brodmann.45-lh']
+        elif dominant == "right":
+            ROI = ['Brodmann.44-rh', 'Brodmann.45-rh']
+        else:
+            raise ValueError("$dominant can either be 'left' or 'right'. Check input value.")
+        labels_roi = []
+        for lbl in labels:
+            if lbl.name in ROI:
+                print(lbl.name)
+                labels_roi.append(lbl)
+        label = labels_roi[0]
+        for i in range(1, len(labels_roi)):
+            label = label + labels_roi[i]
+        return label
+    else:
+        raise ValueError('No such label available. Check input value.')
+    return None
+
+
+# In[ ]:
 
 
 def inverse_solution(par, subject, subjects_dir, epochs, evoked, fwd, to_save=True):
@@ -169,7 +298,7 @@ def inverse_solution(par, subject, subjects_dir, epochs, evoked, fwd, to_save=Tr
     """
     noise_cov = mne.compute_covariance(epochs,
                     tmin=par['ctrlwin'][0], tmax=par['ctrlwin'][1],
-                    method='empirical', rank='info', verbose=True)
+                    method=['shrunk', 'empirical'], rank='info', verbose=True)
 
     inverse_operator = make_inverse_operator(par['info'], fwd, noise_cov,
                                         loose=0.2, depth=0.8)
@@ -179,61 +308,170 @@ def inverse_solution(par, subject, subjects_dir, epochs, evoked, fwd, to_save=Tr
     if to_save:
         stc.save(par['stc_fname'])
 
-    stc_abs = np.abs(stc)
-    _, t_peak = stc_abs.get_peak()
-    print('Absolute source peaked at = %0.3f' % t_peak)
-    nt_src_peak = int(t_peak//stc.tstep - stc.times[0]//stc.tstep)
+    # Visualize dSPM values
+    plt.figure()
+    plt.plot(1e3 * stc.times, stc.data[::100, :].T)
+    plt.xlabel('Time (ms)')
+    plt.ylabel('%s value' % method)
+    plt.savefig(op.join(par['res_dir'], 'evoked_dspm_100_' + subject + '.pdf'))
+    plt.close()
 
+    # Source localisation on cortical surface
+    peak_times = [0.097, .142, .221, .337, .39]
+
+    for tp in peak_times:
+        surfer_kwargs = dict(
+            hemi='both', subjects_dir=subjects_dir,
+            clim=dict(kind='value', lims=[5, 10, 15]), views=['lateral', 'dorsal'],
+            initial_time=tp, time_unit='s', size=(800, 800), smoothing_steps=10,
+            time_viewer=False)
+        brain = stc.plot(**surfer_kwargs)
+        # Draw figure and save image
+        dspm_fname = op.join(par['res_dir'], 'dspm_' + subject + '_%03f.png' % tp)
+        brain.save_image(dspm_fname)
+        brain.close()
+    # Generate and save movie
+    dspm_movie_fname = op.join(par['res_dir'], 'dspm_movie_' + subject + '.mov')
+    brain = stc.plot(**surfer_kwargs)
+    brain.save_movie(dspm_movie_fname, tmin=0.0, tmax=0.55, interpolation='linear',
+                    time_dilation=20, framerate=10, time_viewer=True)
+    brain.close()
+
+    # Estimate peak SNR and find corresponding time
     snr, _ = estimate_snr(evoked, inverse_operator, verbose=True)
     nt_snr = np.argmax(snr)
     SNR = snr[nt_snr]
     print('\nMax SNR at %0.3f s : %0.3f' % (evoked.times[nt_snr], SNR))
 
-    brain = stc.plot(surface='inflated', hemi='both', subjects_dir=subjects_dir,
-                time_viewer=False)
-    brain.set_data_time_index(nt_src_peak)
-    brain.scale_data_colormap(fmin=4, fmid=7, fmax=10, transparent=True)
-    brain.show_view('parietal')
+    # Evoked responses of required brain sources
+    src = inverse_operator['src']
+    ROIs = ["LO", "Wernicke", "Broca"]
 
-    dspm_fname = op.join(par['res_dir'], 'dspm_' + subject + '.png')
-    brain.save_image(dspm_fname)
-    mlab.close()
+    if par['dominant_brain'] == 'find':
+        # Run first for right
+        evoked_roi = {}
+        for roi in ROIs:
+            label = get_roi_labels(subject, subjects_dir, roi, 'right')
+            label_ts = mne.extract_label_time_course(stc, label, src, mode='mean_flip',
+                                                    return_generator=True)
+            label_ts = label_ts.transpose()
+            evoked_roi[roi] = label_ts
+        times = 1e3 * stc.times # Times in ms
+        n_times = len(times)
+        times = times.reshape((n_times, 1))
+        # Draw time series
+        plt.figure()
+        h0 = plt.plot(times, evoked_roi["LO"], 'k', linewidth=3)
+        h1, = plt.plot(times, evoked_roi["Wernicke"], 'g', linewidth=3)
+        h2, = plt.plot(times, evoked_roi["Broca"], 'r', linewidth=3)
+        plt.legend((h0[0], h1, h2), ('Lateral-Occipital', "Wernicke's", "Broca's"))
+        plt.xlim([min(times), max(times)])
+        plt.xlabel('Time (ms)')
+        plt.ylabel('dSPM value')
+        plt.grid(True)
+        plt.savefig(op.join(par['res_dir'], 'evoked_dspm_label_' + subject + '_right-dominant.pdf'))
+        plt.close()
 
-    labels = mne.read_labels_from_annot(subject, 'HCPMMP1', 'both', subjects_dir=subjects_dir)
-    labels_vis = []
-    ROI = ['L_V1_ROI-lh', 'R_V1_ROI-rh']
-    for lbl in labels:
-        if lbl.name in ROI:
-            labels_vis.append(lbl)
-    label = labels_vis[0]
-    for i in range(1, len(labels_vis)):
-        label = label + labels_vis[i]
+        # Then run for left
+        evoked_roi = {}
+        for roi in ROIs:
+            label = get_roi_labels(subject, subjects_dir, roi, 'left')
+            label_ts = mne.extract_label_time_course(stc, label, src, mode='mean_flip',
+                                                    return_generator=True)
+            label_ts = label_ts.transpose()
+            evoked_roi[roi] = label_ts
+        times = 1e3 * stc.times # Times in ms
+        n_times = len(times)
+        times = times.reshape((n_times, 1))
+        # Draw time series
+        plt.figure()
+        h0 = plt.plot(times, evoked_roi["LO"], 'k', linewidth=3)
+        h1, = plt.plot(times, evoked_roi["Wernicke"], 'g', linewidth=3)
+        h2, = plt.plot(times, evoked_roi["Broca"], 'r', linewidth=3)
+        plt.legend((h0[0], h1, h2), ('Lateral-Occipital', "Wernicke's", "Broca's"))
+        plt.xlim([min(times), max(times)])
+        plt.xlabel('Time (ms)')
+        plt.ylabel('dSPM value')
+        plt.grid(True)
+        plt.savefig(op.join(par['res_dir'], 'evoked_dspm_label_' + subject + '_left-dominant.pdf'))
+        plt.close()
+    elif par['dominant_brain'] == 'right':
+        evoked_roi = {}
+        for roi in ROIs:
+            label = get_roi_labels(subject, subjects_dir, roi, 'right')
+            label_ts = mne.extract_label_time_course(stc, label, src, mode='mean_flip',
+                                                    return_generator=True)
+            label_ts = label_ts.transpose()
+            evoked_roi[roi] = label_ts
+        times = 1e3 * stc.times # Times in ms
+        n_times = len(times)
+        times = times.reshape((n_times, 1))
+        # Draw time series
+        plt.figure()
+        h0 = plt.plot(times, evoked_roi["LO"], 'k', linewidth=3)
+        h1, = plt.plot(times, evoked_roi["Wernicke"], 'g', linewidth=3)
+        h2, = plt.plot(times, evoked_roi["Broca"], 'r', linewidth=3)
+        plt.legend((h0[0], h1, h2), ('Lateral-Occipital', "Wernicke's", "Broca's"))
+        plt.xlim([min(times), max(times)])
+        plt.xlabel('Time (ms)')
+        plt.ylabel('dSPM value')
+        plt.grid(True)
+        plt.savefig(op.join(par['res_dir'], 'evoked_dspm_label_' + subject + '_right-dominant.pdf'))
+        plt.close()
+    elif par['dominant_brain'] == 'left':
+        evoked_roi = {}
+        for roi in ROIs:
+            label = get_roi_labels(subject, subjects_dir, roi, 'left')
+            label_ts = mne.extract_label_time_course(stc, label, src, mode='mean_flip',
+                                                    return_generator=True)
+            label_ts = label_ts.transpose()
+            evoked_roi[roi] = label_ts
+        times = 1e3 * stc.times # Times in ms
+        n_times = len(times)
+        times = times.reshape((n_times, 1))
+        # Draw time series
+        plt.figure()
+        h0 = plt.plot(times, evoked_roi["LO"], 'k', linewidth=3)
+        h1, = plt.plot(times, evoked_roi["Wernicke"], 'g', linewidth=3)
+        h2, = plt.plot(times, evoked_roi["Broca"], 'r', linewidth=3)
+        plt.legend((h0[0], h1, h2), ('Lateral-Occipital', "Wernicke's", "Broca's"))
+        plt.xlim([min(times), max(times)])
+        plt.xlabel('Time (ms)')
+        plt.ylabel('dSPM value')
+        plt.grid(True)
+        plt.savefig(op.join(par['res_dir'], 'evoked_dspm_label_' + subject + '_left-dominant.pdf'))
+        plt.close()
+    else:
+        raise ValueError("$dominant can either be 'left'/'right'/'find'. Check input value.")
 
-    flip = mne.label_sign_flip(label, inverse_operator['src'])
-
-    stc_evoked = apply_inverse(evoked, inverse_operator, lambda2, method, pick_ori="normal")
-    stc_evoked_label = stc_evoked.in_label(label)
-    label_mean_evoked = np.mean(stc_evoked_label.data, axis=0)
-    label_mean_evoked_flip = np.mean(flip[:, np.newaxis] * stc_evoked_label.data, axis=0)
-
-    times = 1e3 * stc_evoked.times # times in ms
-    plt.figure()
-    h0 = plt.plot(times, stc_evoked_label.data.T, 'k')
-    h1, = plt.plot(times, label_mean_evoked, 'r', linewidth=3)
-    h2, = plt.plot(times, label_mean_evoked_flip, 'g', linewidth=3)
-    plt.legend((h0[0], h1, h2), ('all dipoles in label', 'mean', 'mean with flip'))
-    plt.xlabel('time (ms)')
-    plt.ylabel('dSPM value')
-    plt.show()
-    plt.savefig(op.join(par['res_dir'], 'evoked_label_' + subject + '.pdf'))
+    # plt.close('all')
+    return None
 
 
-# In[7]:
+# In[ ]:
 
 
-def run_dspm(iSub):
-    badtrls = []
-    par, subject, subjects_dir = set_params(iSub)
+def run_dspm(iSub, dominant_brain):
+    par, subject, subjects_dir = set_params(iSub, dominant_brain=dominant_brain)
     epochs, evoked = preprocess(par, subject, subjects_dir)
     fwd = forward_solution(par, subject, subjects_dir)
     inverse_solution(par, subject, subjects_dir, epochs, evoked, fwd)
+
+
+# In[ ]:
+
+
+# run_dspm(1, dominant_brain="right")
+
+
+# In[ ]:
+
+
+# for i in range(1, 15):
+# # for i in [0]:
+#     sub = i+1
+#     print('sub-%02d' % sub)
+#     run_dspm(iSub=sub, dominant_brain="right")
+
+
+# In[ ]:
