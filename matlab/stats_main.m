@@ -3,6 +3,7 @@ clear
 clc
 
 % Given
+
 params.ROIs = {'LO', 'Wernicke', 'Broca', 'Fusiform'};
 params.exc = [7];
 params.twin = [0, 1];
@@ -27,16 +28,18 @@ end
 % 	stats_roi(Amps(:,q), Lats(:,q), params);
 % end
 
-% Find statistics of relative ERPs in groups between ROIs
-for k=1:4
-	sprintf('Printing statistics for Group-%d', k)
-	if k<4
-		inx = params.group == k;
-		wts = params.n_trials(inx);
-		stats_group(Amps(inx,:), Lats(inx,:), params.N(k), wts);
-	else
-		inx = params.group > 0;
-		wts = params.n_trials(inx);
-		stats_group(Amps(inx,:), Lats(inx,:), params.N(k), wts);
-	end
-end
+% % Find statistics of relative ERPs in groups between ROIs
+% for k=1:4
+% 	sprintf('Printing statistics for Group-%d', k)
+% 	if k<4
+% 		inx = params.group == k;
+% 		wts = params.n_trials(inx);
+% 		stats_group(Amps(inx,:), Lats(inx,:), params.N(k), wts);
+% 	else
+% 		inx = params.group > 0;
+% 		wts = params.n_trials(inx);
+% 		stats_group(Amps(inx,:), Lats(inx,:), params.N(k), wts);
+% 	end
+% end
+
+%% Plot evoked responses with error bars
